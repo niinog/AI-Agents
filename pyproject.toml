@@ -1,0 +1,14 @@
+[project]
+name = "aihero"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+    "course",
+    "course/project",
+    "project",
+]
