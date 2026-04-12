@@ -26,15 +26,7 @@ def build_index(chunks: list[dict[str, Any]]) -> Index:
     index.fit(chunks)
     return index
 
-
-def build_agent() -> Agent:
-    section_chunks = load_chunks(CHUNKS_FILE)
-    index = build_index(section_chunks)
-
-    def text_search(query: str) -> list[dict[str, Any]]:
-        return index.search(query, num_results=5)
-
-    system_prompt = """
+SYSTEM_PROMPT = """
 You are a helpful assistant for answering questions about Chip Huyen's AI Engineering book and related materials.
 
 Use the text_search tool to find relevant information from the section chunks before answering.
@@ -45,16 +37,27 @@ Mention the relevant section title and filename when possible.
 If search does not return relevant information, say that you could not find the answer in the provided materials and then give general guidance.
 """
 
-    provider = GoogleProvider(api_key="AIzaSyDaIzpzJsH2lD9sIio--Gtr2ALmWTiP7Tk")
+
+def build_agent() -> Agent:
+    section_chunks = load_chunks(CHUNKS_FILE)
+    index = build_index(section_chunks)
+
+    def text_search(query: str) -> list[dict[str, Any]]:
+        return index.search(query, num_results=5)
+
+    
+
+    provider = GoogleProvider(api_key=os.environ["GOOGLE_API_KEY"])
+
 
     model = GoogleModel(
-        "gemini-3-flash-preview",
+        "gemini-2.5-flash-lite",
         provider=provider,
     )
 
     return Agent(
         model=model,
         name="aie_book_agent",
-        instructions=system_prompt,
+        instructions=SYSTEM_PROMPT,
         tools=[text_search],
     )
