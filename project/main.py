@@ -1,94 +1,75 @@
-import io
-import sys
-import json
-import zipfile
-import requests
-import frontmatter
+import asyncio
 
-from chunking import (
-    simple_character_chunking,
-    paragraph_sliding_window_chunking,
-    section_chunking,
-)
+import ingest
+import logs
+import agent_building
 
 
-def read_repo_data(repo_owner, repo_name):
-    """
-    Download and parse all markdown files from a GitHub repository.
-    
-    Args:
-        repo_owner: GitHub username or organization
-        repo_name: Repository name
-    
-    Returns:
-        List of dictionaries containing file content and metadata
-    """
-    prefix = 'https://codeload.github.com' 
-    url = f'{prefix}/{repo_owner}/{repo_name}/zip/refs/heads/main'
-    resp = requests.get(url)
-    
-    if resp.status_code != 200:
-        raise Exception(f"Failed to download repository: {resp.status_code}")
-
-    repository_data = []
-    zf = zipfile.ZipFile(io.BytesIO(resp.content))
-    
-    for file_info in zf.infolist():
-        filename = file_info.filename
-        filename_lower = filename.lower()
-
-        if not (filename_lower.endswith('.md') 
-            or filename_lower.endswith('.mdx')):
-            continue
-    
-        try:
-            with zf.open(file_info) as f_in:
-                content = f_in.read().decode('utf-8', errors='ignore')
-                post = frontmatter.loads(content)
-                data = post.to_dict()
-                data['filename'] = filename
-                repository_data.append(data)
-        except Exception as e:
-            print(f"Error processing {filename}: {e}")
-            continue
-    
-    zf.close()
-    return repository_data
+REPO_OWNER = "chiphuyen"
+REPO_NAME = "aie-book"
 
 
+def initialize_index():
+    print(f"Starting AI Engineering Assistant for {REPO_OWNER}/{REPO_NAME}")
+    print("Initializing data ingestion...")
 
+    index = ingest.index_data(
+        repo_owner=REPO_OWNER,
+        repo_name=REPO_NAME,
+        chunk=True,
+        chunking_strategy="section",
+        chunking_params={"level": 2},
+    )
+
+    print("Data indexing completed successfully!")
+    return index
+
+
+def initialize_agent(index):
+    print("Initializing search agent...")
+
+    agent = agent_building.init_agent(
+        index=index,
+        repo_owner=REPO_OWNER,
+        repo_name=REPO_NAME,
+    )
+
+    print("Agent initialized successfully!")
+    return agent
+
+
+def main():
+    index = initialize_index()
+    agent = initialize_agent(index)
+
+    system_prompt = agent_building.SYSTEM_PROMPT_TEMPLATE.format(
+        repo_owner=REPO_OWNER,
+        repo_name=REPO_NAME,
+    )
+
+    print("\nReady to answer your questions!")
+    print("Type 'stop' to exit the program.\n")
+
+    while True:
+        question = input("Your question: ")
+
+        if question.strip().lower() == "stop":
+            print("Goodbye!")
+            break
+
+        print("Processing your question...")
+
+        response = asyncio.run(agent.run(user_prompt=question))
+
+        logs.log_interaction_to_file(
+            agent=agent,
+            messages=response.new_messages(),
+            system_prompt=system_prompt,
+        )
+
+        print("\nResponse:\n", response.output)
+        print("\n" + "=" * 50 + "\n")
 
 
 if __name__ == "__main__":
-
-    repo_owner = sys.argv[1]
-    repo_name = sys.argv[2]
-
-    data = read_repo_data(repo_owner, repo_name)
-    base_name = f"{repo_owner}_{repo_name}"
-
-    output_file = f"{base_name}_data.json"
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-    simple_chunks = simple_character_chunking(data, size=2000, step=1000)
-    paragraph_chunks = paragraph_sliding_window_chunking(data, window_size=5, step=3)
-    section_chunks = section_chunking(data, level=2)
-
-    with open(f"{base_name}_simple_chunks.json", "w", encoding="utf-8") as f:
-        json.dump(simple_chunks, f, indent=2, ensure_ascii=False)
-
-    with open(f"{base_name}_paragraph_chunks.json", "w", encoding="utf-8") as f:
-        json.dump(paragraph_chunks, f, indent=2, ensure_ascii=False)
-
-    with open(f"{base_name}_section_chunks.json", "w", encoding="utf-8") as f:
-        json.dump(section_chunks, f, indent=2, ensure_ascii=False)
-
-    print(f"Documents: {len(data)}")
-    print(f"Simple chunks: {len(simple_chunks)}")
-    print(f"Paragraph chunks: {len(paragraph_chunks)}")
-    print(f"Section chunks: {len(section_chunks)}")
-
-
-
-
+    main()

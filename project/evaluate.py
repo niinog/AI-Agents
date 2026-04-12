@@ -1,21 +1,16 @@
 import json
 import os
-import secrets
-from datetime import datetime
-from pathlib import Path
-from typing import Any
-
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pathlib import Path
+
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
-from agent_building import build_agent
 
 
-LOG_DIR = Path(__file__).parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+
+
 
 
 class EvaluationCheck(BaseModel):
@@ -29,51 +24,13 @@ class EvaluationChecklist(BaseModel):
     checklist: list[EvaluationCheck]
 
 
-def serializer(obj):
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    raise TypeError(f"Type {type(obj)} not serializable")
-
-
-def log_entry(agent, messages, source="user"):
-    return {
-        "agent_name": agent.name,
-        "source": source,
-        "system_prompt": agent.instructions,
-        "messages": ModelMessagesTypeAdapter.dump_python(
-            messages,
-            mode="json",
-        ),
-    }
-
-
-def log_interaction_to_file(agent, messages, source="user"):
-    entry = log_entry(agent, messages, source)
-
-    ts = entry["messages"][-1]["timestamp"]
-
-    if isinstance(ts, datetime):
-        ts_obj = ts
-    else:
-        ts_obj = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-
-    ts_str = ts_obj.strftime("%Y%m%d_%H%M%S")
-    rand_hex = secrets.token_hex(3)
-
-    filename = f"{agent.name}_{ts_str}_{rand_hex}.json"
-    filepath = LOG_DIR / filename
-
-    with filepath.open("w", encoding="utf-8") as f_out:
-        json.dump(entry, f_out, indent=2, default=serializer)
-
-    return filepath
-
 
 def build_eval_agent():
     provider = GoogleProvider(api_key=os.environ["GOOGLE_API_KEY"])
 
+
     model = GoogleModel(
-        "gemini-2.0-flash-lite",
+        "gemini-2.5-flash-lite",
         provider=provider,
     )
 
@@ -123,42 +80,53 @@ Return an evaluation checklist.
 
 
 
-def main():
-    question = "What are best practices for prompt engineering?"
+def get_latest_log_file() -> Path:
+    log_dir = Path(__file__).parent / "logs"
+    log_files = list(log_dir.glob("*.json"))
 
-    agent = build_agent()
+    if not log_files:
+        raise FileNotFoundError(f"No log files found in {log_dir}")
 
-    result = agent.run_sync(user_prompt=question)
-    answer = result.output
+    return max(log_files, key=lambda path: path.stat().st_mtime)
 
-    print("ANSWER")
-    print(answer)
 
-    log_path = log_interaction_to_file(agent, result.new_messages())
-    print(f"\nSaved log to: {log_path}")
 
-    log_record = json.loads(log_path.read_text(encoding="utf-8"))
+
+def load_log_file(filepath):
+    with open(filepath, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def evaluate_log_file(filepath):
+    log_record = load_log_file(filepath)
 
     instructions = log_record["system_prompt"]
-    question_from_log = log_record["messages"][0]["parts"][0]["content"]
-    answer_from_log = log_record["messages"][-1]["parts"][0]["content"]
+    question = log_record["messages"][0]["parts"][0]["content"]
+    answer = log_record["messages"][-1]["parts"][0]["content"]
     log = json.dumps(log_record["messages"], indent=2)
 
     user_prompt = make_eval_prompt(
         instructions=instructions,
-        question=question_from_log,
-        answer=answer_from_log,
+        question=question,
+        answer=answer,
         log=log,
     )
 
     eval_agent = build_eval_agent()
 
-    eval_result = eval_agent.run_sync(
+    result = eval_agent.run_sync(
         user_prompt,
         output_type=EvaluationChecklist,
     )
 
-    checklist = eval_result.output
+    return result.output
+
+
+def main():
+    filepath = get_latest_log_file()
+    print(f"Evaluating log file: {filepath}")
+
+    checklist = evaluate_log_file(filepath)
 
     print("\nEVALUATION SUMMARY")
     print(checklist.summary)
@@ -166,8 +134,6 @@ def main():
     print("\nCHECKLIST")
     for check in checklist.checklist:
         print(check)
-
-
 
 
 if __name__ == "__main__":
