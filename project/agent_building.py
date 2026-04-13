@@ -1,63 +1,88 @@
-import json
 import os
-from pathlib import Path
-from typing import Any
+from functools import lru_cache
 
-from minsearch import Index
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
-
-CHUNKS_FILE = Path(__file__).parent / "chiphuyen_aie-book_section_chunks.json"
-
-
-
-def load_chunks(filename: str | Path) -> list[dict[str, Any]]:
-    with open(filename, "r", encoding="utf-8") as f:
-        return json.load(f)
+from ingest import index_data
+from search_tools import SearchTool
 
 
-def build_index(chunks: list[dict[str, Any]]) -> Index:
-    index = Index(
-        text_fields=["chunk", "section_title", "filename"],
-        keyword_fields=[],
-    )
-    index.fit(chunks)
-    return index
+REPO_OWNER = "chiphuyen"
+REPO_NAME = "aie-book"
 
-SYSTEM_PROMPT = """
-You are a helpful assistant for answering questions about Chip Huyen's AI Engineering book and related materials.
 
-Use the text_search tool to find relevant information from the section chunks before answering.
+SYSTEM_PROMPT_TEMPLATE = """
+You are a practical AI Engineering assistant answering questions using Chip Huyen's AI Engineering materials.
 
-If search returns relevant results, answer using those results.
-Mention the relevant section title and filename when possible.
+Always use the search tool before answering.
 
-If search does not return relevant information, say that you could not find the answer in the provided materials and then give general guidance.
+When search results are relevant:
+- Give a direct answer first.
+- Extract concrete examples, rules, or patterns from the retrieved materials.
+- Avoid saying generic phrases like "the search results do not explicitly say..." unless truly necessary.
+- If the user asks for examples, provide examples.
+- If the user asks for rules or best practices, provide a clear checklist.
+- Cite the source filename for every major point.
+- Format source references as GitHub links.
+
+If search results are weak or unrelated:
+- Say you could not find enough direct evidence in the materials.
+- Then provide general guidance, clearly labeled as general guidance.
+
+Preferred answer format:
+1. Short direct answer
+2. Practical rules/checklist
+3. Concrete examples from the sources
+4. References
 """
 
 
+
+@lru_cache(maxsize=1)
+def build_index_once():
+    """
+    Build the search index once and reuse it.
+
+    This prevents downloading the GitHub repo and rebuilding the index
+    every time build_agent() is called during the same app process.
+    """
+    return index_data(
+        repo_owner=REPO_OWNER,
+        repo_name=REPO_NAME,
+        chunk=True,
+        chunking_strategy="section",
+        chunking_params={"level": 2},
+    )
+
+
+@lru_cache(maxsize=1)
 def build_agent() -> Agent:
-    section_chunks = load_chunks(CHUNKS_FILE)
-    index = build_index(section_chunks)
+    """
+    Build the PydanticAI agent once and reuse it.
 
-    def text_search(query: str) -> list[dict[str, Any]]:
-        return index.search(query, num_results=5)
-
-    
+    In deployment, call build_agent() at app startup or reuse the cached result
+    instead of rebuilding for every user request.
+    """
+    index = build_index_once()
+    search_tool = SearchTool(index, num_results=8)
 
     provider = GoogleProvider(api_key=os.environ["GOOGLE_API_KEY"])
-
 
     model = GoogleModel(
         "gemini-2.5-flash-lite",
         provider=provider,
     )
 
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+        repo_owner=REPO_OWNER,
+        repo_name=REPO_NAME,
+    )
+
     return Agent(
         model=model,
         name="aie_book_agent",
-        instructions=SYSTEM_PROMPT,
-        tools=[text_search],
+        instructions=system_prompt,
+        tools=[search_tool.search],
     )
